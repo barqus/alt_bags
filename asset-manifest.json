@@ -1,0 +1,19 @@
+{
+  "files": {
+    "main.css": "/alt_bags/static/css/main.8f74500a.css",
+    "main.js": "/alt_bags/static/js/main.a65bc8b1.js",
+    "static/js/453.99a55f81.chunk.js": "/alt_bags/static/js/453.99a55f81.chunk.js",
+    "static/media/laced_3.webp": "/alt_bags/static/media/laced_3.3242827d29c188715fec.webp",
+    "static/media/laced_4.webp": "/alt_bags/static/media/laced_4.3f62410f883fb4d3ca0b.webp",
+    "static/media/laced_1.jpg": "/alt_bags/static/media/laced_1.a40233faf4d348b1d011.jpg",
+    "static/media/laced_2.webp": "/alt_bags/static/media/laced_2.69d1523d5909aa36b1f7.webp",
+    "index.html": "/alt_bags/index.html",
+    "main.8f74500a.css.map": "/alt_bags/static/css/main.8f74500a.css.map",
+    "main.a65bc8b1.js.map": "/alt_bags/static/js/main.a65bc8b1.js.map",
+    "453.99a55f81.chunk.js.map": "/alt_bags/static/js/453.99a55f81.chunk.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.8f74500a.css",
+    "static/js/main.a65bc8b1.js"
+  ]
+}
