@@ -5,7 +5,7 @@ import Collections from './pages/CollectionsNew';
 
 function App() {
   return (
-    <Router>
+    <Router basename={process.env.NODE_ENV === 'production' ? '/alt_bags' : '/'}>
       <Routes>
         <Route path="/" element={<Collections />} />
       </Routes>

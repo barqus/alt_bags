@@ -1,5 +1,5 @@
 import React, { useState, useEffect, Suspense } from 'react';
-import { Canvas, useLoader, useFrame } from '@react-three/fiber';
+import { Canvas, useLoader, useFrame, useThree } from '@react-three/fiber';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
 import * as THREE from 'three';
 import '../App.css';
@@ -8,19 +8,125 @@ import laced2 from '../resources/laced/laced_2.webp';
 import laced3 from '../resources/laced/laced_3.webp';
 import laced4 from '../resources/laced/laced_4.webp';
 
-// 3D Alt Logo Component
-function AltLogo3D() {
-  const gltf = useLoader(GLTFLoader, '/models/alt_logo_3d.glb');
-  const logoRef = React.useRef<THREE.Group>(null);
+// Camera Controller for smooth orbit and zoom
+function CameraController({ zoom, lookAtTarget, scrollZoomLevel }: { 
+  zoom: number; 
+  lookAtTarget: { x: number; y: number; z: number } | null;
+  scrollZoomLevel: number;
+}) {
+  const { camera } = useThree();
+  const currentAngles = React.useRef({ angleY: 0, angleX: 0, radius: 40 });
+  const initialized = React.useRef(false);
   
-  const clonedScene = React.useMemo(() => gltf.scene.clone(), [gltf.scene]);
+  useFrame(() => {
+    // Initialize angles from current camera position on first frame
+    if (!initialized.current) {
+      const currentRadius = Math.sqrt(
+        camera.position.x * camera.position.x + 
+        camera.position.y * camera.position.y + 
+        camera.position.z * camera.position.z
+      );
+      currentAngles.current.angleY = Math.atan2(camera.position.x, camera.position.z);
+      currentAngles.current.angleX = Math.atan2(camera.position.y, Math.sqrt(camera.position.x * camera.position.x + camera.position.z * camera.position.z));
+      currentAngles.current.radius = currentRadius;
+      initialized.current = true;
+    }
+    
+    let targetAngleY, targetAngleX, targetRadius;
+    
+    if (lookAtTarget) {
+      // Calculate the angle to orbit camera around center to face the bag
+      targetAngleY = Math.atan2(lookAtTarget.x, lookAtTarget.z);
+      targetAngleX = Math.atan2(lookAtTarget.y, Math.sqrt(lookAtTarget.x * lookAtTarget.x + lookAtTarget.z * lookAtTarget.z));
+      // Apply scroll zoom level to the target radius when zoomed
+      targetRadius = zoom * scrollZoomLevel;
+    } else {
+      // Default position when not looking at a bag
+      targetAngleY = 0;
+      targetAngleX = 0;
+      targetRadius = zoom;
+    }
+    
+    // Smoothly interpolate the angles and radius (not the position directly)
+    // This ensures the camera orbits around instead of cutting through
+    currentAngles.current.angleY += (targetAngleY - currentAngles.current.angleY) * 0.1;
+    currentAngles.current.angleX += (targetAngleX - currentAngles.current.angleX) * 0.1;
+    currentAngles.current.radius += (targetRadius - currentAngles.current.radius) * 0.1;
+    
+    // Calculate camera position from angles
+    const radius = currentAngles.current.radius;
+    camera.position.x = Math.sin(currentAngles.current.angleY) * Math.cos(currentAngles.current.angleX) * radius;
+    camera.position.y = Math.sin(currentAngles.current.angleX) * radius;
+    camera.position.z = Math.cos(currentAngles.current.angleY) * Math.cos(currentAngles.current.angleX) * radius;
+    
+    // Look at the bag if zoomed, otherwise look at center
+    if (lookAtTarget) {
+      camera.lookAt(lookAtTarget.x, lookAtTarget.y, lookAtTarget.z);
+    } else {
+      camera.lookAt(0, 0, 0);
+    }
+  });
+  
+  return null;
+}
+
+// 3D Alt Logo Component
+function AltLogo3D({ isPaused }: { isPaused: boolean }) {
+  const gltf = useLoader(GLTFLoader, `${process.env.PUBLIC_URL}/models/alt_logo_3d.glb`);
+  const logoRef = React.useRef<THREE.Group>(null);
+  const pausedTimeRef = React.useRef<number>(0);
+  const timeOffsetRef = React.useRef<number>(0);
+  
+  const clonedScene = React.useMemo(() => {
+    const scene = gltf.scene.clone();
+    // Clone materials so the logo has independent material properties
+    scene.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh;
+        if (mesh.material) {
+          mesh.material = (mesh.material as THREE.Material).clone();
+        }
+      }
+    });
+    return scene;
+  }, [gltf.scene]);
 
   useFrame((state) => {
     if (logoRef.current) {
+      // Dim the logo when a bag is zoomed
+      const targetOpacity = isPaused ? 0.3 : 1.0;
+      clonedScene.traverse((child) => {
+        if ((child as THREE.Mesh).isMesh) {
+          const mesh = child as THREE.Mesh;
+          if (mesh.material) {
+            const material = mesh.material as THREE.MeshStandardMaterial;
+            material.transparent = true;
+            if (material.opacity === undefined) material.opacity = 1.0;
+            material.opacity += (targetOpacity - material.opacity) * 0.1;
+          }
+        }
+      });
+      
+      if (isPaused) {
+        // Store the time when paused
+        if (pausedTimeRef.current === 0) {
+          pausedTimeRef.current = state.clock.elapsedTime;
+        }
+        return;
+      } else {
+        // Calculate time offset when unpausing
+        if (pausedTimeRef.current !== 0) {
+          timeOffsetRef.current += state.clock.elapsedTime - pausedTimeRef.current;
+          pausedTimeRef.current = 0;
+        }
+      }
+      
+      const adjustedTime = state.clock.elapsedTime - timeOffsetRef.current;
+      
       // Random multi-axis rotation with varying speeds (slowed down by half)
-      logoRef.current.rotation.x = Math.sin(state.clock.elapsedTime * 0.115) * 0.4;
-      logoRef.current.rotation.y = state.clock.elapsedTime * 0.175 + Math.cos(state.clock.elapsedTime * 0.085) * 0.3;
-      logoRef.current.rotation.z = Math.sin(state.clock.elapsedTime * 0.095) * 0.25;
+      logoRef.current.rotation.x = Math.sin(adjustedTime * 0.115) * 0.4;
+      logoRef.current.rotation.y = adjustedTime * 0.175 + Math.cos(adjustedTime * 0.085) * 0.3;
+      logoRef.current.rotation.z = Math.sin(adjustedTime * 0.095) * 0.25;
     }
   });
 
@@ -41,13 +147,15 @@ function OrbitRing({
   radiusZ, 
   tiltX, 
   tiltZ,
-  rotationSpeed
+  rotationSpeed,
+  isPaused
 }: { 
   radiusX: number; 
   radiusZ: number; 
   tiltX: number; 
   tiltZ: number;
   rotationSpeed: { x: number; y: number; z: number };
+  isPaused: boolean;
 }) {
   const points = React.useMemo(() => {
     const pts: THREE.Vector3[] = [];
@@ -68,6 +176,8 @@ function OrbitRing({
   
   const lineRef = React.useRef<THREE.LineLoop>(null);
   const groupRef = React.useRef<THREE.Group>(null);
+  const pausedTimeRef = React.useRef<number>(0);
+  const timeOffsetRef = React.useRef<number>(0);
   
   React.useEffect(() => {
     if (lineRef.current) {
@@ -76,11 +186,39 @@ function OrbitRing({
   }, [points]);
   
   useFrame((state) => {
-    if (groupRef.current) {
+    if (groupRef.current && lineRef.current) {
+      // Dim the orbit lines when a bag is zoomed
+      const targetOpacity = isPaused ? 0.2 : 0.6;
+      const material = lineRef.current.material as THREE.LineDashedMaterial;
+      if (material.opacity !== undefined) {
+        material.opacity += (targetOpacity - material.opacity) * 0.1;
+      }
+      
+      // Set render order to render behind bags when zoomed
+      if (lineRef.current) {
+        lineRef.current.renderOrder = isPaused ? -1 : 0;
+      }
+      
+      if (isPaused) {
+        // Store the time when paused
+        if (pausedTimeRef.current === 0) {
+          pausedTimeRef.current = state.clock.elapsedTime;
+        }
+        return;
+      } else {
+        // Calculate time offset when unpausing
+        if (pausedTimeRef.current !== 0) {
+          timeOffsetRef.current += state.clock.elapsedTime - pausedTimeRef.current;
+          pausedTimeRef.current = 0;
+        }
+      }
+      
+      const adjustedTime = state.clock.elapsedTime - timeOffsetRef.current;
+      
       // Asymmetric rotation of the orbit itself
-      groupRef.current.rotation.x = tiltX + Math.sin(state.clock.elapsedTime * rotationSpeed.x) * 0.3;
+      groupRef.current.rotation.x = tiltX + Math.sin(adjustedTime * rotationSpeed.x) * 0.3;
       groupRef.current.rotation.y += rotationSpeed.y;
-      groupRef.current.rotation.z = tiltZ + Math.cos(state.clock.elapsedTime * rotationSpeed.z) * 0.2;
+      groupRef.current.rotation.z = tiltZ + Math.cos(adjustedTime * rotationSpeed.z) * 0.2;
     }
   });
   
@@ -102,6 +240,8 @@ function OrbitRing({
           linewidth={4}
           dashSize={2}
           gapSize={1}
+          depthWrite={false}
+          depthTest={true}
         />
       </lineLoop>
     </group>
@@ -110,26 +250,22 @@ function OrbitRing({
 
 // Inspection Bag Component for Popup
 function InspectionBag({ bagId }: { bagId: number }) {
-  const gltf = useLoader(GLTFLoader, '/models/test_bag_2.glb');
+  const gltf = useLoader(GLTFLoader, `${process.env.PUBLIC_URL}/models/test_bag_2.glb`);
   const bagRef = React.useRef<THREE.Group>(null);
   
-  const clonedScene = React.useMemo(() => gltf.scene.clone(), [gltf.scene]);
-
-  React.useEffect(() => {
-    clonedScene.traverse((child) => {
+  const clonedScene = React.useMemo(() => {
+    const scene = gltf.scene.clone();
+    // Clone materials for independent material properties
+    scene.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
         if (mesh.material) {
-          const newMaterial = new THREE.MeshStandardMaterial({
-            color: '#8B7355',
-            metalness: 0.3,
-            roughness: 0.7,
-          });
-          mesh.material = newMaterial;
+          mesh.material = (mesh.material as THREE.Material).clone();
         }
       }
     });
-  }, [clonedScene]);
+    return scene;
+  }, [gltf.scene]);
 
   useFrame((state) => {
     if (bagRef.current) {
@@ -158,8 +294,12 @@ function OrbitingBag({
   orbitTiltZ,
   onPointerEnter,
   onPointerLeave,
-  onClick,
-  isPaused
+  isPaused,
+  isHovered,
+  isZoomed,
+  isDragging,
+  manualRotation,
+  bagPositionsRef
 }: { 
   bagId: number;
   radiusX: number;
@@ -170,45 +310,116 @@ function OrbitingBag({
   tiltOffset: number;
   orbitTiltX: number;
   orbitTiltZ: number;
-  onPointerEnter: () => void;
+  onPointerEnter: (bagId: number) => void;
   onPointerLeave: () => void;
-  onClick: (bagId: number, event: any) => void;
   isPaused: boolean;
+  isHovered: boolean;
+  isZoomed: boolean;
+  isDragging: boolean;
+  manualRotation: { x: number; y: number };
+  bagPositionsRef: React.MutableRefObject<{ [key: number]: { x: number; y: number; z: number } }>;
 }) {
-  const gltf = useLoader(GLTFLoader, '/models/test_bag_2.glb');
+  const gltf = useLoader(GLTFLoader, `${process.env.PUBLIC_URL}/models/test_bag_2.glb`);
   const bagRef = React.useRef<THREE.Group>(null);
   const orbitRef = React.useRef<THREE.Group>(null);
+  const scaleRef = React.useRef<number>(15);
   const pausedTimeRef = React.useRef<number>(0);
   const timeOffsetRef = React.useRef<number>(0);
+  const targetRotation = React.useRef<{ x: number; y: number; z: number }>({ x: 0, y: 0, z: 0 });
   
-  const clonedScene = React.useMemo(() => gltf.scene.clone(), [gltf.scene]);
-
-  React.useEffect(() => {
-    clonedScene.traverse((child) => {
+  const clonedScene = React.useMemo(() => {
+    const scene = gltf.scene.clone();
+    // Clone materials so each bag has independent material properties
+    scene.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
         if (mesh.material) {
-          const newMaterial = new THREE.MeshStandardMaterial({
-            color: '#8B7355',
-            metalness: 0.3,
-            roughness: 0.7,
-          });
-          mesh.material = newMaterial;
+          mesh.material = (mesh.material as THREE.Material).clone();
         }
       }
     });
-  }, [clonedScene]);
+    return scene;
+  }, [gltf.scene]);
 
   useFrame((state) => {
     if (bagRef.current && orbitRef.current) {
-      if (isPaused) {
-        // Store the time when paused
+      // Always update bag position in ref for camera targeting
+      const worldPosition = new THREE.Vector3();
+      bagRef.current.getWorldPosition(worldPosition);
+      bagPositionsRef.current[bagId] = {
+        x: worldPosition.x,
+        y: worldPosition.y,
+        z: worldPosition.z
+      };
+      
+      // Smoothly scale up when zoomed
+      const targetScale = isZoomed ? 25 : 15; // Scale up to 25 when zoomed
+      scaleRef.current += (targetScale - scaleRef.current) * 0.1;
+      
+      // Update opacity and render order - dim non-zoomed bags when any bag is zoomed
+      const targetOpacity = isZoomed ? 1.0 : (isPaused ? 0.3 : 1.0);
+      clonedScene.traverse((child) => {
+        if ((child as THREE.Mesh).isMesh) {
+          const mesh = child as THREE.Mesh;
+          
+          // Set render order - zoomed bags render in front of orbit lines
+          mesh.renderOrder = isZoomed ? 1 : 0;
+          
+          if (mesh.material) {
+            const material = mesh.material as THREE.MeshStandardMaterial;
+            material.transparent = true;
+            // Initialize opacity if it doesn't exist
+            if (material.opacity === undefined) {
+              material.opacity = 1.0;
+            }
+            material.opacity += (targetOpacity - material.opacity) * 0.1;
+          }
+        }
+      });
+      
+      // When zoomed, handle rotation
+      if (isZoomed) {
+        // Store the time when paused or hovered
+        if (pausedTimeRef.current === 0) {
+          pausedTimeRef.current = state.clock.elapsedTime;
+        }
+        
+        if (isDragging) {
+          // User is manually rotating - apply manual rotation on top of default orientation
+          const bagAngleY = Math.atan2(worldPosition.x, worldPosition.z);
+          const defaultOrientation = bagAngleY + Math.PI; // Face outward from center
+          
+          bagRef.current.rotation.x = manualRotation.x;
+          bagRef.current.rotation.y = defaultOrientation + manualRotation.y;
+          bagRef.current.rotation.z = 0;
+        } else {
+          // Calculate angle to face the camera
+          const bagAngleY = Math.atan2(worldPosition.x, worldPosition.z);
+          
+          // Rotate bag to face outward toward the camera
+          targetRotation.current = { 
+            x: manualRotation.x, 
+            y: bagAngleY + Math.PI + manualRotation.y, // Rotate to face outward from center + manual rotation
+            z: 0 
+          };
+          
+          // Smoothly interpolate to target rotation
+          bagRef.current.rotation.x += (targetRotation.current.x - bagRef.current.rotation.x) * 0.1;
+          bagRef.current.rotation.y += (targetRotation.current.y - bagRef.current.rotation.y) * 0.1;
+          bagRef.current.rotation.z += (targetRotation.current.z - bagRef.current.rotation.z) * 0.1;
+        }
+        
+        return;
+      }
+      
+      if (isPaused || isHovered) {
+        // Store the time when paused or hovered
         if (pausedTimeRef.current === 0) {
           pausedTimeRef.current = state.clock.elapsedTime;
         }
         return;
       } else {
-        // Calculate time offset when unpausing
+        // Calculate time offset when unpausing/unhovering
         if (pausedTimeRef.current !== 0) {
           timeOffsetRef.current += state.clock.elapsedTime - pausedTimeRef.current;
           pausedTimeRef.current = 0;
@@ -238,19 +449,15 @@ function OrbitingBag({
       <group 
         ref={bagRef}
         onPointerEnter={(e) => {
-    e.stopPropagation();
-          onPointerEnter();
+          e.stopPropagation();
+          onPointerEnter(bagId);
         }}
         onPointerLeave={(e) => {
-    e.stopPropagation();
+          e.stopPropagation();
           onPointerLeave();
         }}
-        onClick={(e) => {
-    e.stopPropagation();
-          onClick(bagId, e);
-        }}
       >
-        <primitive object={clonedScene} scale={15} />
+        <primitive object={clonedScene} scale={scaleRef.current} />
       </group>
     </group>
   );
@@ -261,14 +468,22 @@ function OrbitScene({
   rotation,
   onBagPointerEnter,
   onBagPointerLeave,
-  onBagClick,
-  isPaused
+  isPaused,
+  hoveredBagId,
+  zoomedBagId,
+  isDraggingZoomedBag,
+  zoomedBagRotation,
+  bagPositionsRef
 }: { 
   rotation: { x: number; y: number };
-  onBagPointerEnter: () => void;
+  onBagPointerEnter: (bagId: number) => void;
   onBagPointerLeave: () => void;
-  onBagClick: (bagId: number, event: any) => void;
   isPaused: boolean;
+  hoveredBagId: number | null;
+  zoomedBagId: number | null;
+  isDraggingZoomedBag: boolean;
+  zoomedBagRotation: { x: number; y: number };
+  bagPositionsRef: React.MutableRefObject<{ [key: number]: { x: number; y: number; z: number } }>;
 }) {
   const groupRef = React.useRef<THREE.Group>(null);
   
@@ -293,6 +508,7 @@ function OrbitScene({
         tiltX={0.2} 
         tiltZ={0.1} 
         rotationSpeed={{ x: 0.15, y: 0.002, z: 0.18 }}
+        isPaused={zoomedBagId !== null}
       />
       <OrbitRing 
         radiusX={16} 
@@ -300,6 +516,7 @@ function OrbitScene({
         tiltX={-0.3} 
         tiltZ={0.25} 
         rotationSpeed={{ x: 0.12, y: -0.0015, z: 0.14 }}
+        isPaused={zoomedBagId !== null}
       />
       <OrbitRing 
         radiusX={20} 
@@ -307,10 +524,11 @@ function OrbitScene({
         tiltX={0.15} 
         tiltZ={-0.2} 
         rotationSpeed={{ x: 0.1, y: 0.001, z: 0.11 }}
+        isPaused={zoomedBagId !== null}
       />
       
       {/* Center 3D Logo */}
-      <AltLogo3D />
+      <AltLogo3D isPaused={zoomedBagId !== null} />
       
       {/* Three Orbiting Bags with different orbit speeds and self-rotation speeds */}
       <OrbitingBag 
@@ -325,8 +543,12 @@ function OrbitScene({
         orbitTiltZ={0.1}
         onPointerEnter={onBagPointerEnter}
         onPointerLeave={onBagPointerLeave}
-        onClick={onBagClick}
-        isPaused={isPaused}
+        isPaused={isPaused || zoomedBagId !== null}
+        isHovered={hoveredBagId === 1 || zoomedBagId === 1}
+        isZoomed={zoomedBagId === 1}
+        isDragging={isDraggingZoomedBag && zoomedBagId === 1}
+        manualRotation={zoomedBagRotation}
+        bagPositionsRef={bagPositionsRef}
       />
       <OrbitingBag 
         bagId={2}
@@ -340,8 +562,12 @@ function OrbitScene({
         orbitTiltZ={0.25}
         onPointerEnter={onBagPointerEnter}
         onPointerLeave={onBagPointerLeave}
-        onClick={onBagClick}
-        isPaused={isPaused}
+        isPaused={isPaused || zoomedBagId !== null}
+        isHovered={hoveredBagId === 2 || zoomedBagId === 2}
+        isZoomed={zoomedBagId === 2}
+        isDragging={isDraggingZoomedBag && zoomedBagId === 2}
+        manualRotation={zoomedBagRotation}
+        bagPositionsRef={bagPositionsRef}
       />
       <OrbitingBag 
         bagId={3}
@@ -355,8 +581,12 @@ function OrbitScene({
         orbitTiltZ={-0.2}
         onPointerEnter={onBagPointerEnter}
         onPointerLeave={onBagPointerLeave}
-        onClick={onBagClick}
-        isPaused={isPaused}
+        isPaused={isPaused || zoomedBagId !== null}
+        isHovered={hoveredBagId === 3 || zoomedBagId === 3}
+        isZoomed={zoomedBagId === 3}
+        isDragging={isDraggingZoomedBag && zoomedBagId === 3}
+        manualRotation={zoomedBagRotation}
+        bagPositionsRef={bagPositionsRef}
       />
     </group>
   );
@@ -367,23 +597,137 @@ function Collections() {
   const [isDraggingSystem, setIsDraggingSystem] = useState(false);
   const [dragStartPos, setDragStartPos] = useState({ x: 0, y: 0 });
   const [isHoveringBag, setIsHoveringBag] = useState(false);
+  const [hoveredBagId, setHoveredBagId] = useState<number | null>(null);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
-  const [isPaused, setIsPaused] = useState(false);
-  const [selectedBag, setSelectedBag] = useState<number | null>(null);
-  const [clickPosition, setClickPosition] = useState({ x: 0, y: 0 });
-  const [modalAnimating, setModalAnimating] = useState(false);
-  const [selectedImage, setSelectedImage] = useState(0);
+  const [zoomedBagId, setZoomedBagId] = useState<number | null>(null); // Track which bag is zoomed in
+  const [isDraggingZoomedBag, setIsDraggingZoomedBag] = useState(false);
+  const [zoomedBagRotation, setZoomedBagRotation] = useState({ x: 0, y: 0 });
+  const [scrollZoomLevel, setScrollZoomLevel] = useState(1.0); // Scroll zoom multiplier (1.0 = default)
+  const [cameraZoom, setCameraZoom] = useState(40); // Camera Z position (40 = default, 25 = zoomed in)
+  const [cameraTarget, setCameraTarget] = useState<{ x: number; y: number; z: number } | null>(null); // Camera look-at target
+  const [isAnimatingToDefault, setIsAnimatingToDefault] = useState(false); // Track if we're animating to default
+  const baseCameraDistance = React.useRef<number>(40); // Store the base camera distance for zoomed bag
+  const bagPositionsRef = React.useRef<{ [key: number]: { x: number; y: number; z: number } }>({
+    1: { x: 0, y: 0, z: 0 },
+    2: { x: 0, y: 0, z: 0 },
+    3: { x: 0, y: 0, z: 0 }
+  });
   const isHoveringBagRef = React.useRef(false);
+  const targetRotation = React.useRef({ x: 0, y: 0 });
+  const justZoomedRef = React.useRef(false); // Prevent immediate zoom out after zoom in
   
+  // Temporarily unused - for future modal functionality
+  const [isPaused] = useState(false);
+  const [selectedBag] = useState<number | null>(null);
+  const [clickPosition] = useState({ x: 0, y: 0 });
+  const [modalAnimating] = useState(false);
+  const [selectedImage, setSelectedImage] = useState(0);
   const productImages = [laced1, laced2, laced3, laced4, '3d'] as const;
+  const handleClosePopup = () => {};
+  
+  // Animate system rotation to target when resetting to default
+  React.useEffect(() => {
+    if (!isAnimatingToDefault) return;
+    
+    let animationFrameId: number;
+    let shouldContinue = true;
+    
+    const animate = () => {
+      if (!shouldContinue) return;
+      
+      setSystem3DRotation((current) => {
+        const dx = targetRotation.current.x - current.x;
+        const dy = targetRotation.current.y - current.y;
+        
+        // Check if we're close enough to the target (within 0.01 radians)
+        if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) {
+          shouldContinue = false;
+          setIsAnimatingToDefault(false);
+          return targetRotation.current;
+        }
+        
+        // Smoothly interpolate towards target
+        const newRotation = {
+          x: current.x + dx * 0.1,
+          y: current.y + dy * 0.1
+        };
+        
+        // Schedule next frame only if we're still animating
+        if (shouldContinue) {
+          animationFrameId = requestAnimationFrame(animate);
+        }
+        
+        return newRotation;
+      });
+    };
+    
+    animationFrameId = requestAnimationFrame(animate);
+    
+    return () => {
+      shouldContinue = false;
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+      }
+    };
+  }, [isAnimatingToDefault]);
   
   const handleSystemMouseDown = (e: React.MouseEvent) => {
-    if (isPaused) {
-      // If paused, unpause on click
-      setIsPaused(false);
+    // If a bag is already zoomed and we're hovering over it, start rotation
+    if (zoomedBagId !== null && isHoveringBagRef.current && hoveredBagId === zoomedBagId) {
+      setIsDraggingZoomedBag(true);
+      setDragStartPos({ x: e.clientX, y: e.clientY });
       return;
     }
-    if (isHoveringBagRef.current) return; // Don't start dragging if hovering over a bag
+    
+    if (isHoveringBagRef.current && hoveredBagId) {
+      // Zoom in to the bag (first click)
+      if (zoomedBagId !== hoveredBagId) {
+        const bagPos = bagPositionsRef.current[hoveredBagId];
+        
+        // Calculate distance from center to bag
+        const distanceFromCenter = Math.sqrt(
+          bagPos.x * bagPos.x + 
+          bagPos.y * bagPos.y + 
+          bagPos.z * bagPos.z
+        );
+        
+        // Set camera distance: bag's distance from center + fixed viewing distance
+        // This ensures all bags appear the same size when zoomed
+        const viewingDistance = 15; // Fixed distance to view the bag from
+        const cameraDistance = distanceFromCenter + viewingDistance;
+        
+        setCameraTarget({ x: bagPos.x, y: bagPos.y, z: bagPos.z }); // Look at the bag in 3D
+        setCameraZoom(cameraDistance); // Dynamic zoom based on bag position
+        setZoomedBagId(hoveredBagId);
+        setZoomedBagRotation({ x: 0, y: 0 }); // Reset rotation for new zoom
+        justZoomedRef.current = true;
+        
+        // Allow zoom out after a short delay
+        setTimeout(() => {
+          justZoomedRef.current = false;
+        }, 300);
+      }
+      // Don't start dragging system if clicking on bag
+      return;
+    }
+    
+    // Click on background while zoomed -> zoom out
+    if (zoomedBagId !== null) {
+      // Animate rotation back to default
+      targetRotation.current = { x: 0, y: 0 };
+      setIsAnimatingToDefault(true);
+      
+      // Reset other states
+      setCameraZoom(40);
+      setCameraTarget(null);
+      setZoomedBagId(null);
+      setScrollZoomLevel(1.0);
+      justZoomedRef.current = false;
+      return;
+    }
+    
+    // Start dragging the system
+    setIsAnimatingToDefault(false); // Stop any ongoing animation
     setIsDraggingSystem(true);
     setDragStartPos({ x: e.clientX, y: e.clientY });
   };
@@ -392,51 +736,74 @@ function Collections() {
     // Update mouse position for crosshair
     setMousePos({ x: e.clientX, y: e.clientY });
     
-    if (!isDraggingSystem || isPaused) return;
+    if (isDraggingZoomedBag) {
+      // Rotate the zoomed bag
+      const deltaX = e.clientX - dragStartPos.x;
+      const deltaY = e.clientY - dragStartPos.y;
+      
+      setZoomedBagRotation({
+        x: zoomedBagRotation.x - deltaY * 0.01,
+        y: zoomedBagRotation.y + deltaX * 0.01,
+      });
+      
+      setDragStartPos({ x: e.clientX, y: e.clientY });
+      return;
+    }
     
-    const deltaX = e.clientX - dragStartPos.x;
-    const deltaY = e.clientY - dragStartPos.y;
-    
-    setSystem3DRotation({
-      x: system3DRotation.x - deltaY * 0.01,
-      y: system3DRotation.y + deltaX * 0.01,
-    });
-    
-    setDragStartPos({ x: e.clientX, y: e.clientY });
+    if (isDraggingSystem) {
+      // Rotate the entire system
+      const deltaX = e.clientX - dragStartPos.x;
+      const deltaY = e.clientY - dragStartPos.y;
+      
+      setSystem3DRotation({
+        x: system3DRotation.x - deltaY * 0.01,
+        y: system3DRotation.y + deltaX * 0.01,
+      });
+      
+      setDragStartPos({ x: e.clientX, y: e.clientY });
+    }
   };
   
   const handleSystemMouseUp = () => {
     setIsDraggingSystem(false);
+    setIsDraggingZoomedBag(false);
   };
   
-  const handleBagPointerEnter = () => {
+  const handleBagPointerEnter = (bagId: number) => {
+    // If another bag is zoomed in, don't allow hovering on other bags
+    if (zoomedBagId !== null && zoomedBagId !== bagId) {
+      return;
+    }
+    
     isHoveringBagRef.current = true;
     setIsHoveringBag(true);
+    setHoveredBagId(bagId);
   };
   
   const handleBagPointerLeave = () => {
+    // Mark that we've left the bag's bounds
     isHoveringBagRef.current = false;
-    setIsHoveringBag(false);
-  };
-  
-  const handleBagClick = (bagId: number, event: any) => {
-    setIsPaused(true);
-    setIsDraggingSystem(false);
-    setClickPosition({ x: mousePos.x, y: mousePos.y });
-    setModalAnimating(true);
-    setSelectedBag(bagId);
-    setSelectedImage(0); // Reset to first image
     
-    // Trigger animation
-    setTimeout(() => {
-      setModalAnimating(false);
-    }, 50);
+    // When a bag is zoomed, don't zoom out on pointer leave
+    // Only zoom out when explicitly clicking to zoom out or clicking background
+    if (zoomedBagId !== null) {
+      setIsHoveringBag(false);
+      setHoveredBagId(null);
+      return;
+    }
+    
+    setIsHoveringBag(false);
+    setHoveredBagId(null);
   };
-  
-  const handleClosePopup = () => {
-    setSelectedBag(null);
-    setIsPaused(false);
-    setSelectedImage(0); // Reset to first image
+
+  const handleWheel = (e: React.WheelEvent) => {
+    if (zoomedBagId === null) return; // Only zoom when a bag is already zoomed
+    
+    e.preventDefault();
+    
+    // Adjust scroll zoom level
+    const zoomDelta = e.deltaY * 0.001; // Scale down the delta for smooth zooming
+    setScrollZoomLevel((prev) => Math.max(0.5, Math.min(3.0, prev + zoomDelta))); // Clamp between 0.5x and 3x
   };
   
   return (
@@ -447,16 +814,15 @@ function Collections() {
         width: '100vw', 
         height: '100vh', 
         overflow: 'hidden', 
-        cursor: 'none'
+        cursor: zoomedBagId !== null ? (isDraggingZoomedBag ? 'grabbing' : 'grab') : 'none'
       }}
+      onWheel={handleWheel}
     >
       <Canvas
-        camera={{ position: [0, 0, 40], fov: 50 }}
+        camera={{ position: [0, 0, cameraZoom], fov: 50 }}
         style={{ width: '100%', height: '100%' }}
         onPointerDown={(e) => {
-          if (!isHoveringBagRef.current) {
-            handleSystemMouseDown(e as any);
-          }
+          handleSystemMouseDown(e as any);
         }}
         onPointerMove={(e) => {
           handleSystemMouseMove(e as any);
@@ -464,18 +830,124 @@ function Collections() {
         onPointerUp={handleSystemMouseUp}
         onPointerLeave={handleSystemMouseUp}
       >
+        <CameraController zoom={cameraZoom} lookAtTarget={cameraTarget} scrollZoomLevel={scrollZoomLevel} />
         <Suspense fallback={null}>
           <OrbitScene 
             rotation={system3DRotation}
             onBagPointerEnter={handleBagPointerEnter}
             onBagPointerLeave={handleBagPointerLeave}
-            onBagClick={handleBagClick}
-            isPaused={isPaused}
+            isPaused={false}
+            hoveredBagId={hoveredBagId}
+            zoomedBagId={zoomedBagId}
+            isDraggingZoomedBag={isDraggingZoomedBag}
+            zoomedBagRotation={zoomedBagRotation}
+            bagPositionsRef={bagPositionsRef}
           />
         </Suspense>
       </Canvas>
       
-      {/* Space Game Crosshair */}
+      {/* Close button when zoomed */}
+      {zoomedBagId !== null && (
+        <button
+          onClick={() => {
+            // Animate rotation back to default
+            targetRotation.current = { x: 0, y: 0 };
+            setIsAnimatingToDefault(true);
+            
+            // Reset other states
+            setCameraZoom(40);
+            setCameraTarget(null);
+            setZoomedBagId(null);
+            setScrollZoomLevel(1.0);
+            justZoomedRef.current = false;
+          }}
+          style={{
+            position: 'fixed',
+            top: '40px',
+            right: '40px',
+            width: '50px',
+            height: '50px',
+            borderRadius: '50%',
+            border: '2px solid #eb4b29',
+            backgroundColor: 'rgba(255, 255, 255, 0.9)',
+            color: '#eb4b29',
+            fontSize: '24px',
+            fontWeight: 'bold',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10000,
+            transition: 'all 0.3s ease',
+            boxShadow: '0 2px 10px rgba(0, 0, 0, 0.2)',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.backgroundColor = '#eb4b29';
+            e.currentTarget.style.color = 'white';
+            e.currentTarget.style.transform = 'scale(1.1)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.9)';
+            e.currentTarget.style.color = '#eb4b29';
+            e.currentTarget.style.transform = 'scale(1)';
+          }}
+        >
+          ✕
+        </button>
+      )}
+
+      {/* Reset Camera Button - Always visible */}
+      <button
+        onClick={() => {
+          // Animate rotation back to default
+          targetRotation.current = { x: 0, y: 0 };
+          setIsAnimatingToDefault(true);
+          
+          // Reset other states
+          setCameraZoom(40);
+          setCameraTarget(null);
+          setZoomedBagId(null);
+          setScrollZoomLevel(1.0);
+          justZoomedRef.current = false;
+        }}
+        style={{
+          position: 'fixed',
+          bottom: '40px',
+          right: '40px',
+          width: '50px',
+          height: '50px',
+          borderRadius: '50%',
+          border: '2px solid #eb4b29',
+          backgroundColor: 'rgba(255, 255, 255, 0.9)',
+          color: '#eb4b29',
+          fontSize: '20px',
+          fontWeight: 'bold',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 10000,
+          transition: 'all 0.3s ease',
+          boxShadow: '0 2px 10px rgba(0, 0, 0, 0.2)',
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.backgroundColor = '#eb4b29';
+          e.currentTarget.style.color = 'white';
+          e.currentTarget.style.transform = 'scale(1.1)';
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.9)';
+          e.currentTarget.style.color = '#eb4b29';
+          e.currentTarget.style.transform = 'scale(1)';
+        }}
+        title="Reset Camera"
+      >
+        ⟲
+      </button>
+      
+      {/* Space Game Crosshair - hidden when zoomed */}
+      {zoomedBagId === null && (
+        <>
       {/* Vertical lines from top/bottom to center square */}
       <div
               style={{
@@ -646,9 +1118,11 @@ function Collections() {
           }}
         />
               </div>
+        </>
+      )}
 
-      {/* Modal Overlay */}
-      {selectedBag !== null && (
+      {/* Modal Overlay - Temporarily disabled */}
+      {false && (
         <>
           {/* Invisible overlay to catch clicks outside modal */}
           <div
